@@ -1,0 +1,13 @@
+{
+  "name": "本棚かんり",
+  "short_name": "本棚",
+  "description": "バーコードを読み取って家の本を管理するアプリ",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f4ef",
+  "theme_color": "#2f5d50",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
