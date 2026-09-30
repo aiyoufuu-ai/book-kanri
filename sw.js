@@ -1,5 +1,5 @@
 // アプリ本体をキャッシュしてオフラインでも一覧を見られるようにする
-const CACHE = 'bookkanri-v1';
+const CACHE = 'bookkanri-v2';
 const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icon.svg', 'lib/zxing-browser.min.js'];
 
 self.addEventListener('install', (e) => {

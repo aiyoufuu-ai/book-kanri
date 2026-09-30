@@ -21,6 +21,20 @@ function saveBooks() {
 
 let books = loadBooks();
 
+function newId() {
+  return crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random();
+}
+
+/** ローカルの変更を保存して画面に反映し、連携中ならスプレッドシートへ送る */
+function commit(ops) {
+  saveBooks();
+  render();
+  if (!syncConfig().url || !ops.length) return;
+  pending.push(...ops);
+  savePending();
+  scheduleSync();
+}
+
 function findByIsbn(isbn) {
   return books.find((b) => b.isbn === isbn);
 }
@@ -106,7 +120,7 @@ async function addByIsbn(isbn) {
   if (existing) return { book: existing, duplicate: true };
   const info = await lookupBook(isbn);
   const book = {
-    id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random(),
+    id: newId(),
     isbn,
     title: info?.title || `(タイトル不明) ${isbn}`,
     author: info?.author || '',
@@ -119,8 +133,7 @@ async function addByIsbn(isbn) {
     addedAt: new Date().toISOString(),
   };
   books.push(book);
-  saveBooks();
-  render();
+  commit([{ op: 'upsert', book }]);
   return { book, duplicate: false, notFound: !info };
 }
 
@@ -224,13 +237,11 @@ $('#detail').addEventListener('close', () => {
       status: $('#d-status').value,
       memo: $('#d-memo').value,
     });
-    saveBooks();
-    render();
+    commit([{ op: 'upsert', book: b }]);
   } else if (action === 'delete') {
     if (confirm(`「${b.title}」を削除しますか？`)) {
       books = books.filter((x) => x.id !== b.id);
-      saveBooks();
-      render();
+      commit([{ op: 'delete', id: b.id }]);
       toast('削除しました');
     }
   }
@@ -405,7 +416,10 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
-$('#btn-menu').addEventListener('click', () => $('#menu').showModal());
+$('#btn-menu').addEventListener('click', () => {
+  renderSyncSettings();
+  $('#menu').showModal();
+});
 
 $('#btn-export-json').addEventListener('click', () => {
   download(`books-${today()}.json`, JSON.stringify(books, null, 2), 'application/json');
@@ -428,19 +442,157 @@ $('#import-file').addEventListener('change', async (e) => {
   try {
     const incoming = JSON.parse(await file.text());
     if (!Array.isArray(incoming)) throw new Error('not array');
-    let added = 0;
+    const ops = [];
     for (const b of incoming) {
       if (!b?.isbn || findByIsbn(b.isbn)) continue;
-      books.push({ status: 'unread', memo: '', location: '', addedAt: new Date().toISOString(), ...b, id: b.id || String(Date.now()) + Math.random() });
-      added++;
+      const book = { status: 'unread', memo: '', location: '', addedAt: new Date().toISOString(), ...b, id: b.id || newId() };
+      books.push(book);
+      ops.push({ op: 'upsert', book });
     }
-    saveBooks();
-    render();
+    const added = ops.length;
+    commit(ops);
     $('#menu').close();
     toast(`${added}冊を読み込みました（重複はスキップ）`);
   } catch {
     toast('読み込みに失敗しました');
   }
+});
+
+// ---------- Google スプレッドシート連携 ----------
+// gas/Code.gs を Apps Script のウェブアプリとして公開し、その URL と合言葉を設定すると、
+// スプレッドシートを正として複数端末で同じ本棚を共有できる。
+
+const SYNC_KEY = 'bookkanri.sync.v1';
+const PENDING_KEY = 'bookkanri.pending.v1';
+
+function syncConfig() {
+  try {
+    return JSON.parse(localStorage.getItem(SYNC_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+let pending = (() => {
+  try {
+    return JSON.parse(localStorage.getItem(PENDING_KEY)) || [];
+  } catch {
+    return [];
+  }
+})();
+
+function savePending() {
+  localStorage.setItem(PENDING_KEY, JSON.stringify(pending));
+}
+
+/** サーバーの一覧に、まだ送れていない変更を重ねる */
+function applyOpsLocal(list, ops) {
+  for (const o of ops) {
+    if (o.op === 'delete') {
+      list = list.filter((b) => b.id !== o.id);
+    } else {
+      const i = list.findIndex((b) => b.id === o.book.id);
+      if (i >= 0) list[i] = o.book;
+      else if (!list.some((b) => b.isbn === o.book.isbn)) list.push(o.book);
+    }
+  }
+  return list;
+}
+
+let syncTimer = null;
+let syncing = false;
+let syncAgain = false;
+
+function scheduleSync(delay = 800) {
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(sync, delay);
+}
+
+/** 未送信の変更を送り、スプレッドシートの最新の一覧を受け取る */
+async function sync({ manual = false } = {}) {
+  const { url, token } = syncConfig();
+  if (!url) return;
+  if (syncing) {
+    syncAgain = true;
+    return;
+  }
+  syncing = true;
+  const ops = pending.slice();
+  setSyncStatus('同期中…');
+  try {
+    // text/plain で送るとプリフライトが発生せず Apps Script に届く
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ token, ops }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'error');
+    pending = pending.slice(ops.length);
+    savePending();
+    books = applyOpsLocal(data.books, pending);
+    saveBooks();
+    render();
+    setSyncStatus(`最終同期 ${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}`);
+    if (manual) toast(`同期しました（${books.length}冊）`);
+  } catch (e) {
+    console.warn('sync', e);
+    const msg = e.message === 'unauthorized' ? '合言葉が違います' : '同期に失敗しました';
+    setSyncStatus(`${msg}（未送信 ${pending.length}件）`);
+    if (manual || e.message === 'unauthorized') toast(msg);
+  } finally {
+    syncing = false;
+    if (syncAgain) {
+      syncAgain = false;
+      scheduleSync(0);
+    }
+  }
+}
+
+function setSyncStatus(text) {
+  $('#sync-status').textContent = text;
+}
+
+function renderSyncSettings() {
+  const { url, token } = syncConfig();
+  $('#sync-url').value = url || '';
+  $('#sync-token').value = token || '';
+  $('#btn-sync-now').hidden = !url;
+  $('#btn-sync-off').hidden = !url;
+  if (!url) setSyncStatus('未連携（この端末だけに保存）');
+}
+
+$('#btn-sync-save').addEventListener('click', () => {
+  const url = $('#sync-url').value.trim();
+  const token = $('#sync-token').value.trim();
+  if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url)) {
+    toast('ウェブアプリのURL（…/exec）を入力してください');
+    return;
+  }
+  const wasOff = !syncConfig().url;
+  localStorage.setItem(SYNC_KEY, JSON.stringify({ url, token }));
+  // 初めて連携するときは、この端末の本をスプレッドシートへ送る（ISBNが同じ本は重複しない）
+  if (wasOff && books.length) {
+    pending.push(...books.map((book) => ({ op: 'upsert', book })));
+    savePending();
+  }
+  renderSyncSettings();
+  sync({ manual: true });
+});
+
+$('#btn-sync-now').addEventListener('click', () => sync({ manual: true }));
+
+$('#btn-sync-off').addEventListener('click', () => {
+  if (!confirm('スプレッドシート連携を解除しますか？（本の一覧はこの端末に残ります）')) return;
+  localStorage.removeItem(SYNC_KEY);
+  pending = [];
+  savePending();
+  renderSyncSettings();
+});
+
+// 別の端末での変更を取り込むため、アプリに戻ってきたときにも同期する
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') scheduleSync(0);
 });
 
 // ---------- その他 ----------
@@ -463,3 +615,5 @@ if ('serviceWorker' in navigator) {
 }
 
 render();
+renderSyncSettings();
+sync();

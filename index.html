@@ -108,12 +108,23 @@
   <!-- メニュー -->
   <dialog id="menu">
     <form method="dialog">
+      <h2>Googleスプレッドシート連携</h2>
+      <p class="note">スプレッドシートに本の一覧を保存し、家族の複数の端末で共有できます。設定方法は README の「スプレッドシート連携」を見てください。</p>
+      <label>ウェブアプリのURL <input id="sync-url" type="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off"></label>
+      <label>合言葉 <input id="sync-token" autocomplete="off"></label>
+      <p id="sync-status" class="note"></p>
+      <div class="actions">
+        <button type="button" id="btn-sync-off" class="danger">解除</button>
+        <span class="spacer"></span>
+        <button type="button" id="btn-sync-now">同期</button>
+        <button type="button" id="btn-sync-save" class="primary">保存</button>
+      </div>
       <h2>データ</h2>
       <button type="button" id="btn-export-json">JSONで書き出し（バックアップ）</button>
       <button type="button" id="btn-export-csv">CSVで書き出し</button>
       <button type="button" id="btn-import">JSONから読み込み</button>
       <input type="file" id="import-file" accept="application/json,.json" hidden>
-      <p class="note">データはこの端末のブラウザ内に保存されます。機種変更前などはJSONでバックアップしてください。</p>
+      <p class="note">連携していない場合、データはこの端末のブラウザ内だけに保存されます。機種変更前などはJSONでバックアップしてください。</p>
       <div class="actions"><button value="close">閉じる</button></div>
     </form>
   </dialog>
